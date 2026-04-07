@@ -1,0 +1,10 @@
+---
+description: Use pnpm for all package management in this repo
+alwaysApply: true
+---
+
+# Package manager
+
+Use **pnpm** only: `pnpm install`, `pnpm add`, `pnpm remove`, `pnpm exec`, `pnpm run`, etc. Do not use `npm` or `yarn` for this project unless the user explicitly asks.
+
+The repo declares `"packageManager": "pnpm@10.11.0"` in `package.json` (Corepack-compatible).
