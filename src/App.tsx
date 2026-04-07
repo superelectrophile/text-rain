@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Canvas from "./Canvas";
 
 function App() {
-  const [delay, setDelay] = useState<number>(5);
+  const [delay, setDelay] = useState<number>(3);
   const [mode, setMode] = useState<"debug" | "text-rain">("text-rain");
   const supportedKeys = useMemo(
     () => new Set<string>(Object.keys(KEY_POSITION_MAP)),

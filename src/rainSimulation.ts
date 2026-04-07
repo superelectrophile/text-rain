@@ -24,7 +24,7 @@ const GRID_NODE_LABEL = "grid-node";
 /** Default drop fill when not colliding */
 const RAIN_FILL = "rgba(147, 197, 253, 0.42)";
 
-/** Solid white while overlapping solid bodies (active grid nodes, other rain, etc.). */
+/** Solid white for poem-letter rain when overlapping solid bodies. */
 const RAIN_FILL_COLLIDING = "#ffffff";
 
 /** Target spawns per second (Poisson-style using accumulator). */
@@ -37,7 +37,7 @@ const RAIN_RADIUS = 4;
 const SPECIAL_RAIN_RADIUS = RAIN_RADIUS * 2;
 
 /** Random vertical offset range (px) when spawning each poem letter (± half). */
-const SPECIAL_SPAWN_Y_VARIATION_PX = 42;
+const SPECIAL_SPAWN_Y_VARIATION_PX = 82;
 
 /** SVG `font-size` for rain glyphs (px); tuned to ~match `RAIN_RADIUS`. */
 const RAIN_FONT_PX = RAIN_RADIUS * 2.35;
@@ -90,18 +90,20 @@ function adjustRainCollisionDepth(
 }
 
 /**
- * Each rain in the pair gets ±1 for non-sensor contacts only.
- * Inactive grid nodes are sensors — overlaps must not flip rain to white.
+ * Each qualifying rain in the pair gets ±1 for non-sensor contacts only.
+ * Inactive grid nodes are sensors — overlaps must not bump depth.
  */
 function adjustPairRainDepth(
   map: Map<number, number>,
   a: Matter.Body,
   b: Matter.Body,
   delta: number,
+  countCollisionsForRain: (rain: Matter.Body) => boolean,
 ) {
   const bumpIfSolidContact = (rain: Matter.Body, other: Matter.Body) => {
     if (rain.label !== RAIN_LABEL) return;
     if (other.isSensor) return;
+    if (!countCollisionsForRain(rain)) return;
     adjustRainCollisionDepth(map, rain, delta);
   };
   bumpIfSolidContact(a, b);
@@ -136,7 +138,7 @@ function spawnSpecialTextLine(
   width: number,
   text: string,
   glyphByBodyId: Map<number, string>,
-  lockedXByBodyId: Map<number, number>,
+  poemRainBodyIds: Set<number>,
 ) {
   const r = SPECIAL_RAIN_RADIUS;
   const xs = specialLetterXs(width);
@@ -152,10 +154,13 @@ function spawnSpecialTextLine(
       restitution: 0.12,
       density: 0.001,
     });
-    Body.setVelocity(drop, { x: 0, y: Math.random() * 0.6 });
+    Body.setVelocity(drop, {
+      x: (Math.random() - 0.5) * 1.2,
+      y: Math.random() * 0.6,
+    });
     World.add(world, drop);
     glyphByBodyId.set(drop.id, ch);
-    lockedXByBodyId.set(drop.id, x);
+    poemRainBodyIds.add(drop.id);
   }
 }
 
@@ -346,19 +351,33 @@ export function mountRainSimulation(
   /** Uppercase letter shown for each rain body (fixed at spawn). */
   const rainGlyphByBodyId = new Map<number, string>();
 
-  /** Poem-line drops: fixed column X (world px). */
-  const rainLockedXByBodyId = new Map<number, number>();
+  /** Poem-line drops (for white-on-collision only); motion is unconstrained. */
+  const poemRainBodyIds = new Set<number>();
   let lastSpecialTextSpawnMs = performance.now();
+
+  const isPoemLetterRain = (b: Matter.Body) => poemRainBodyIds.has(b.id);
 
   const onCollisionStart = (e: { pairs: Matter.Pair[] }) => {
     for (const pair of e.pairs) {
-      adjustPairRainDepth(rainCollisionDepth, pair.bodyA, pair.bodyB, 1);
+      adjustPairRainDepth(
+        rainCollisionDepth,
+        pair.bodyA,
+        pair.bodyB,
+        1,
+        isPoemLetterRain,
+      );
     }
   };
 
   const onCollisionEnd = (e: { pairs: Matter.Pair[] }) => {
     for (const pair of e.pairs) {
-      adjustPairRainDepth(rainCollisionDepth, pair.bodyA, pair.bodyB, -1);
+      adjustPairRainDepth(
+        rainCollisionDepth,
+        pair.bodyA,
+        pair.bodyB,
+        -1,
+        isPoemLetterRain,
+      );
     }
   };
 
@@ -408,19 +427,11 @@ export function mountRainSimulation(
         width,
         pickRandomPoemSlice30(),
         rainGlyphByBodyId,
-        rainLockedXByBodyId,
+        poemRainBodyIds,
       );
     }
 
     Engine.update(engine, dt);
-
-    for (const b of Composite.allBodies(engine.world)) {
-      if (b.label !== RAIN_LABEL) continue;
-      const lx = rainLockedXByBodyId.get(b.id);
-      if (lx === undefined) continue;
-      Body.setPosition(b, { x: lx, y: b.position.y });
-      Body.setVelocity(b, { x: 0, y: b.velocity.y });
-    }
 
     const removed: Matter.Body[] = [];
     for (const b of Composite.allBodies(engine.world)) {
@@ -429,7 +440,7 @@ export function mountRainSimulation(
     for (const b of removed) {
       rainCollisionDepth.delete(b.id);
       rainGlyphByBodyId.delete(b.id);
-      rainLockedXByBodyId.delete(b.id);
+      poemRainBodyIds.delete(b.id);
       World.remove(engine.world, b);
     }
 
@@ -473,7 +484,7 @@ export function mountRainSimulation(
       .attr("y", (b) => b.position.y)
       .text((b) => rainGlyphByBodyId.get(b.id) ?? "?")
       .attr("fill", (b) =>
-        (rainCollisionDepth.get(b.id) ?? 0) > 0
+        isPoemLetterRain(b) && (rainCollisionDepth.get(b.id) ?? 0) > 0
           ? RAIN_FILL_COLLIDING
           : RAIN_FILL,
       );
@@ -489,7 +500,7 @@ export function mountRainSimulation(
     Events.off(engine, "collisionEnd", onCollisionEnd);
     rainCollisionDepth.clear();
     rainGlyphByBodyId.clear();
-    rainLockedXByBodyId.clear();
+    poemRainBodyIds.clear();
     World.clear(engine.world, false);
     Engine.clear(engine);
     nodeMap.clear();
