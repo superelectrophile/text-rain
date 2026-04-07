@@ -14,6 +14,7 @@ import {
   isPointCoveredByActiveKeys,
   KEY_FADE_MS,
 } from "./keyboardSvg";
+import poemSource from "./poem.txt?raw";
 
 const { Engine, World, Bodies, Body, Composite, Events } = Matter;
 
@@ -32,8 +33,21 @@ const SPAWNS_PER_SEC = 50;
 /** Fixed Matter circle radius for every rain body (hitbox size). */
 const RAIN_RADIUS = 4;
 
+/** Special poem-letter drops use this hitbox radius (2× normal). */
+const SPECIAL_RAIN_RADIUS = RAIN_RADIUS * 2;
+
+/** Random vertical offset range (px) when spawning each poem letter (± half). */
+const SPECIAL_SPAWN_Y_VARIATION_PX = 42;
+
 /** SVG `font-size` for rain glyphs (px); tuned to ~match `RAIN_RADIUS`. */
 const RAIN_FONT_PX = RAIN_RADIUS * 2.35;
+
+const SPECIAL_TEXT_INTERVAL_MS = 5000;
+const SPECIAL_CHAR_COUNT = 30;
+/** Horizontal span from first to last letter center, as a fraction of canvas width. */
+const SPECIAL_LINE_WIDTH_FRAC = 0.5;
+
+const POEM_FLAT = poemSource.replace(/\s+/g, " ").trim();
 
 /** Collider inactive below this scale (sensor, no rain blocking). */
 const NODE_SENSOR_THRESHOLD = 0.002;
@@ -42,6 +56,26 @@ const GEOM_EPS = 1e-4;
 
 function randomRainLetter() {
   return String.fromCharCode(65 + Math.floor(Math.random() * 26));
+}
+
+function pickRandomPoemSlice30(): string {
+  const src = POEM_FLAT;
+  if (src.length === 0) return " ".repeat(SPECIAL_CHAR_COUNT);
+  if (src.length < SPECIAL_CHAR_COUNT)
+    return src.padEnd(SPECIAL_CHAR_COUNT, " ");
+  const start = Math.floor(
+    Math.random() * (src.length - SPECIAL_CHAR_COUNT + 1),
+  );
+  return src.slice(start, start + SPECIAL_CHAR_COUNT);
+}
+
+/** X positions for `SPECIAL_CHAR_COUNT` letters, centered, spanning `SPECIAL_LINE_WIDTH_FRAC` of width. */
+function specialLetterXs(width: number): number[] {
+  const w = Math.max(32, width);
+  const span = w * SPECIAL_LINE_WIDTH_FRAC;
+  const step = span / Math.max(1, SPECIAL_CHAR_COUNT - 1);
+  const left = w * 0.5 - span * 0.5;
+  return Array.from({ length: SPECIAL_CHAR_COUNT }, (_, i) => left + i * step);
 }
 
 function adjustRainCollisionDepth(
@@ -95,6 +129,34 @@ function spawnRainDrop(
   });
   World.add(world, drop);
   glyphByBodyId.set(drop.id, randomRainLetter());
+}
+
+function spawnSpecialTextLine(
+  world: Matter.World,
+  width: number,
+  text: string,
+  glyphByBodyId: Map<number, string>,
+  lockedXByBodyId: Map<number, number>,
+) {
+  const r = SPECIAL_RAIN_RADIUS;
+  const xs = specialLetterXs(width);
+  const yBase = -r - 6;
+  for (let i = 0; i < SPECIAL_CHAR_COUNT; i++) {
+    const ch = text[i] ?? " ";
+    const x = xs[i]!;
+    const y = yBase + (Math.random() - 0.5) * SPECIAL_SPAWN_Y_VARIATION_PX;
+    const drop = Bodies.circle(x, y, r, {
+      label: RAIN_LABEL,
+      frictionAir: 0.09,
+      friction: 0,
+      restitution: 0.12,
+      density: 0.001,
+    });
+    Body.setVelocity(drop, { x: 0, y: Math.random() * 0.6 });
+    World.add(world, drop);
+    glyphByBodyId.set(drop.id, ch);
+    lockedXByBodyId.set(drop.id, x);
+  }
 }
 
 function randomJitter(side: number) {
@@ -151,7 +213,12 @@ function ensureGridColliders(
     const jitterY = randomJitter(jitterSide);
     const hitX = n.cx + jitterX;
     const hitY = n.cy + jitterY;
-    const logicalDesired = isPointCoveredByActiveKeys(hitX, hitY, active, layout);
+    const logicalDesired = isPointCoveredByActiveKeys(
+      hitX,
+      hitY,
+      active,
+      layout,
+    );
     const frozenJx = logicalDesired ? jitterX : 0;
     const frozenJy = logicalDesired ? jitterY : 0;
     const wx = n.cx + (logicalDesired ? frozenJx : jitterX);
@@ -201,7 +268,12 @@ function syncGridColliders(
     const posHitX = wasDesired ? n.cx + np.frozenJx : n.cx + np.jitterX;
     const posHitY = wasDesired ? n.cy + np.frozenJy : n.cy + np.jitterY;
 
-    let nextDesired = isPointCoveredByActiveKeys(posHitX, posHitY, active, layout);
+    let nextDesired = isPointCoveredByActiveKeys(
+      posHitX,
+      posHitY,
+      active,
+      layout,
+    );
 
     if (nextDesired && !wasDesired) {
       np.frozenJx = np.jitterX;
@@ -274,6 +346,10 @@ export function mountRainSimulation(
   /** Uppercase letter shown for each rain body (fixed at spawn). */
   const rainGlyphByBodyId = new Map<number, string>();
 
+  /** Poem-line drops: fixed column X (world px). */
+  const rainLockedXByBodyId = new Map<number, number>();
+  let lastSpecialTextSpawnMs = performance.now();
+
   const onCollisionStart = (e: { pairs: Matter.Pair[] }) => {
     for (const pair of e.pairs) {
       adjustPairRainDepth(rainCollisionDepth, pair.bodyA, pair.bodyB, 1);
@@ -325,7 +401,26 @@ export function mountRainSimulation(
       spawnCarry -= 1;
     }
 
+    if (now - lastSpecialTextSpawnMs >= SPECIAL_TEXT_INTERVAL_MS) {
+      lastSpecialTextSpawnMs = now;
+      spawnSpecialTextLine(
+        engine.world,
+        width,
+        pickRandomPoemSlice30(),
+        rainGlyphByBodyId,
+        rainLockedXByBodyId,
+      );
+    }
+
     Engine.update(engine, dt);
+
+    for (const b of Composite.allBodies(engine.world)) {
+      if (b.label !== RAIN_LABEL) continue;
+      const lx = rainLockedXByBodyId.get(b.id);
+      if (lx === undefined) continue;
+      Body.setPosition(b, { x: lx, y: b.position.y });
+      Body.setVelocity(b, { x: 0, y: b.velocity.y });
+    }
 
     const removed: Matter.Body[] = [];
     for (const b of Composite.allBodies(engine.world)) {
@@ -334,6 +429,7 @@ export function mountRainSimulation(
     for (const b of removed) {
       rainCollisionDepth.delete(b.id);
       rainGlyphByBodyId.delete(b.id);
+      rainLockedXByBodyId.delete(b.id);
       World.remove(engine.world, b);
     }
 
@@ -393,6 +489,7 @@ export function mountRainSimulation(
     Events.off(engine, "collisionEnd", onCollisionEnd);
     rainCollisionDepth.clear();
     rainGlyphByBodyId.clear();
+    rainLockedXByBodyId.clear();
     World.clear(engine.world, false);
     Engine.clear(engine);
     nodeMap.clear();
