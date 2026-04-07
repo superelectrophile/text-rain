@@ -23,7 +23,7 @@ const GRID_NODE_LABEL = "grid-node";
 /** Default drop fill when not colliding */
 const RAIN_FILL = "rgba(147, 197, 253, 0.42)";
 
-/** Solid white while overlapping any body (grid nodes, other drops, sensors, etc.). */
+/** Solid white while overlapping solid bodies (active grid nodes, other rain, etc.). */
 const RAIN_FILL_COLLIDING = "#ffffff";
 
 /** Target spawns per second (Poisson-style using accumulator). */
@@ -55,15 +55,23 @@ function adjustRainCollisionDepth(
   else map.set(body.id, next);
 }
 
-/** Each rain in the pair gets ±1 (rain–rain turns both white). */
+/**
+ * Each rain in the pair gets ±1 for non-sensor contacts only.
+ * Inactive grid nodes are sensors — overlaps must not flip rain to white.
+ */
 function adjustPairRainDepth(
   map: Map<number, number>,
   a: Matter.Body,
   b: Matter.Body,
   delta: number,
 ) {
-  adjustRainCollisionDepth(map, a, delta);
-  adjustRainCollisionDepth(map, b, delta);
+  const bumpIfSolidContact = (rain: Matter.Body, other: Matter.Body) => {
+    if (rain.label !== RAIN_LABEL) return;
+    if (other.isSensor) return;
+    adjustRainCollisionDepth(map, rain, delta);
+  };
+  bumpIfSolidContact(a, b);
+  bumpIfSolidContact(b, a);
 }
 
 function spawnRainDrop(
