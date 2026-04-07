@@ -29,10 +29,20 @@ const RAIN_FILL_COLLIDING = "#ffffff";
 /** Target spawns per second (Poisson-style using accumulator). */
 const SPAWNS_PER_SEC = 50;
 
+/** Fixed Matter circle radius for every rain body (hitbox size). */
+const RAIN_RADIUS = 4;
+
+/** SVG `font-size` for rain glyphs (px); tuned to ~match `RAIN_RADIUS`. */
+const RAIN_FONT_PX = RAIN_RADIUS * 2.35;
+
 /** Collider inactive below this scale (sensor, no rain blocking). */
 const NODE_SENSOR_THRESHOLD = 0.002;
 
 const GEOM_EPS = 1e-4;
+
+function randomRainLetter() {
+  return String.fromCharCode(65 + Math.floor(Math.random() * 26));
+}
 
 function adjustRainCollisionDepth(
   map: Map<number, number>,
@@ -56,9 +66,13 @@ function adjustPairRainDepth(
   adjustRainCollisionDepth(map, b, delta);
 }
 
-function spawnRainDrop(world: Matter.World, width: number) {
+function spawnRainDrop(
+  world: Matter.World,
+  width: number,
+  glyphByBodyId: Map<number, string>,
+) {
   const w = Math.max(32, width);
-  const r = 2 + Math.random() * 5;
+  const r = RAIN_RADIUS;
   const x = r + Math.random() * (w - 2 * r);
   const drop = Bodies.circle(x, -r - 6, r, {
     label: RAIN_LABEL,
@@ -72,6 +86,7 @@ function spawnRainDrop(world: Matter.World, width: number) {
     y: Math.random() * 0.6,
   });
   World.add(world, drop);
+  glyphByBodyId.set(drop.id, randomRainLetter());
 }
 
 function randomJitter(side: number) {
@@ -234,7 +249,7 @@ function syncGridColliders(
 }
 
 /**
- * Matter.js rain + D3 SVG circles. Rain layer is `svg.rain-layer` (keep behind keyboard).
+ * Matter.js rain + D3 SVG text (`svg.rain-layer`, behind keyboard).
  */
 export function mountRainSimulation(
   host: HTMLDivElement,
@@ -247,6 +262,9 @@ export function mountRainSimulation(
 
   /** Count of active collision pairs per rain id (handles multi-contact). */
   const rainCollisionDepth = new Map<number, number>();
+
+  /** Uppercase letter shown for each rain body (fixed at spawn). */
+  const rainGlyphByBodyId = new Map<number, string>();
 
   const onCollisionStart = (e: { pairs: Matter.Pair[] }) => {
     for (const pair of e.pairs) {
@@ -294,7 +312,8 @@ export function mountRainSimulation(
 
     spawnCarry += (SPAWNS_PER_SEC * dt) / 1000;
     while (spawnCarry >= 1) {
-      if (Math.random() < 0.92) spawnRainDrop(engine.world, width);
+      if (Math.random() < 0.92)
+        spawnRainDrop(engine.world, width, rainGlyphByBodyId);
       spawnCarry -= 1;
     }
 
@@ -306,6 +325,7 @@ export function mountRainSimulation(
     }
     for (const b of removed) {
       rainCollisionDepth.delete(b.id);
+      rainGlyphByBodyId.delete(b.id);
       World.remove(engine.world, b);
     }
 
@@ -329,16 +349,25 @@ export function mountRainSimulation(
       .attr("preserveAspectRatio", "none");
 
     svg
-      .selectAll<SVGCircleElement, Matter.Body>("circle.raindrop")
+      .selectAll<SVGTextElement, Matter.Body>("text.raindrop")
       .data(rainBodies, (d) => d.id)
       .join(
-        (enter) => enter.append("circle").attr("class", "raindrop"),
+        (enter) =>
+          enter
+            .append("text")
+            .attr("class", "raindrop")
+            .attr("text-anchor", "middle")
+            .attr("dominant-baseline", "central")
+            .attr("font-size", `${RAIN_FONT_PX}px`)
+            .attr("font-family", "system-ui, sans-serif")
+            .attr("font-weight", "600")
+            .style("user-select", "none"),
         (update) => update,
         (exit) => exit.remove(),
       )
-      .attr("cx", (b) => b.position.x)
-      .attr("cy", (b) => b.position.y)
-      .attr("r", (b) => b.circleRadius ?? 3)
+      .attr("x", (b) => b.position.x)
+      .attr("y", (b) => b.position.y)
+      .text((b) => rainGlyphByBodyId.get(b.id) ?? "?")
       .attr("fill", (b) =>
         (rainCollisionDepth.get(b.id) ?? 0) > 0
           ? RAIN_FILL_COLLIDING
@@ -355,6 +384,7 @@ export function mountRainSimulation(
     Events.off(engine, "collisionStart", onCollisionStart);
     Events.off(engine, "collisionEnd", onCollisionEnd);
     rainCollisionDepth.clear();
+    rainGlyphByBodyId.clear();
     World.clear(engine.world, false);
     Engine.clear(engine);
     nodeMap.clear();
