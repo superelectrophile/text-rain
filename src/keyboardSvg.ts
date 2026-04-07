@@ -167,28 +167,79 @@ function buildRadialGradient(
 /** Shared with physics (grid node colliders) so expand/collapse matches glow fade. */
 export const KEY_FADE_MS = 320;
 
+type GridCircleDatum = GridGlowDatum & { opacity: number; rDraw: number };
+
+function buildGridCircleRenderData(
+  layout: ReturnType<typeof computeKeyboardLayout>,
+): GridCircleDatum[] {
+  const { nodes: baseNodes } = buildGridGlowData(layout);
+  return baseNodes.map((d) => {
+    const snap = getGridNodeRenderSnap(d.id);
+    const s = Math.max(0, Math.min(1, snap?.displayScale ?? 0));
+    const jx = snap?.jitterX ?? 0;
+    const jy = snap?.jitterY ?? 0;
+    return {
+      ...d,
+      cx: d.cx + jx,
+      cy: d.cy + jy,
+      opacity: s,
+      rDraw: d.r * s,
+    };
+  });
+}
+
 /**
- * Renders or updates the keyboard-area grid glow (small radial fills per node).
- * @param animateOpacity — If false (e.g. resize), opacity/r snap; if true, d3 transitions.
+ * Fast path: sync circle geometry/opacity to the physics snapshot (call once per rAF).
+ * No-op if `svg.keyboard-svg` is missing. Does not rebuild defs/gradients.
+ */
+export function updateGridNodeCirclesFromSnapshot(
+  host: HTMLDivElement,
+  gradientIdPrefix: string,
+) {
+  const svg = d3.select(host).select<SVGSVGElement>("svg.keyboard-svg");
+  if (svg.empty()) return;
+
+  const layout = computeKeyboardLayout(host.clientWidth, host.clientHeight);
+  const { w, h } = layout;
+  svg.attr("viewBox", `0 0 ${w} ${h}`);
+
+  const activeGradId = `${gradientIdPrefix}-glow-node`;
+  const nodes = buildGridCircleRenderData(layout);
+
+  svg
+    .selectAll<SVGCircleElement, GridCircleDatum>("circle.grid-node")
+    .data(nodes, (d) => d.id)
+    .join(
+      (enter) =>
+        enter
+          .append("circle")
+          .attr("class", "grid-node")
+          .attr("opacity", 0)
+          .attr("r", 0),
+      (update) => update,
+      (exit) => exit.remove(),
+    )
+    .attr("cx", (d) => d.cx)
+    .attr("cy", (d) => d.cy)
+    .attr("r", (d) => d.rDraw)
+    .attr("opacity", (d) => d.opacity)
+    .attr("fill", `url(#${activeGradId})`)
+    .style("pointer-events", "none");
+}
+
+/**
+ * Full setup: SVG shell, defs/gradient, and grid circles (e.g. mount + resize).
+ * Glow size/opacity follow `displayScale` from the physics snapshot (no separate d3 fade).
  */
 export function renderKeyboardSvg(
   host: HTMLDivElement,
   _active: Record<string, boolean>,
   gradientIdPrefix: string,
-  animateOpacity = true,
+  _animateOpacity = true,
 ) {
   const layout = computeKeyboardLayout(host.clientWidth, host.clientHeight);
   const { w, h } = layout;
-  const { nodes: baseNodes } = buildGridGlowData(layout);
-
-  type RenderDatum = GridGlowDatum & { desired: boolean };
-  const nodes: RenderDatum[] = baseNodes.map((d) => {
-    const snap = getGridNodeRenderSnap(d.id);
-    const desired = snap?.logicalDesired ?? false;
-    const jx = snap?.jitterX ?? 0;
-    const jy = snap?.jitterY ?? 0;
-    return { ...d, cx: d.cx + jx, cy: d.cy + jy, desired };
-  });
+  const nodes = buildGridCircleRenderData(layout);
 
   const activeGradId = `${gradientIdPrefix}-glow-node`;
 
@@ -228,11 +279,8 @@ export function renderKeyboardSvg(
     "100%",
   );
 
-  const opacityTarget = (d: RenderDatum) => (d.desired ? 1 : 0);
-  const rTarget = (d: RenderDatum) => (d.desired ? d.r : 0);
-
-  const circles = svg
-    .selectAll<SVGCircleElement, RenderDatum>("circle.grid-node")
+  svg
+    .selectAll<SVGCircleElement, GridCircleDatum>("circle.grid-node")
     .data(nodes, (d) => d.id)
     .join(
       (enter) =>
@@ -246,21 +294,8 @@ export function renderKeyboardSvg(
     )
     .attr("cx", (d) => d.cx)
     .attr("cy", (d) => d.cy)
+    .attr("r", (d) => d.rDraw)
+    .attr("opacity", (d) => d.opacity)
     .attr("fill", `url(#${activeGradId})`)
     .style("pointer-events", "none");
-
-  if (animateOpacity) {
-    circles
-      .interrupt("node-fade")
-      .transition("node-fade")
-      .duration(KEY_FADE_MS)
-      .ease(d3.easeCubicInOut)
-      .attr("opacity", opacityTarget)
-      .attr("r", rTarget);
-  } else {
-    circles
-      .interrupt("node-fade")
-      .attr("opacity", opacityTarget)
-      .attr("r", rTarget);
-  }
 }

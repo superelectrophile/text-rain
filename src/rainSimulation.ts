@@ -1,6 +1,10 @@
 import * as d3 from "d3";
 import Matter from "matter-js";
-import { clearGridNodeRenderSnapshot, replaceGridNodeRenderSnapshot } from "./gridNodeRenderSnapshot";
+import {
+  clearGridNodeRenderSnapshot,
+  replaceGridNodeRenderSnapshot,
+  type GridNodeRenderSnap,
+} from "./gridNodeRenderSnapshot";
 import {
   buildGridGlowData,
   computeKeyboardLayout,
@@ -190,15 +194,13 @@ function syncGridColliders(
     np.lastGeomScale = targetGeom;
   }
 
-  const snap = new Map<
-    string,
-    { logicalDesired: boolean; jitterX: number; jitterY: number }
-  >();
+  const snap = new Map<string, GridNodeRenderSnap>();
   for (const n of nodes) {
     const np = nodeMap.get(n.id);
     if (!np) continue;
     snap.set(n.id, {
       logicalDesired: np.logicalDesired,
+      displayScale: np.displayScale,
       jitterX: np.logicalDesired ? np.frozenJx : np.jitterX,
       jitterY: np.logicalDesired ? np.frozenJy : np.jitterY,
     });
@@ -212,6 +214,7 @@ function syncGridColliders(
 export function mountRainSimulation(
   host: HTMLDivElement,
   getActive: () => Record<string, boolean>,
+  afterGridSync?: () => void,
 ): () => void {
   const engine = Engine.create({ enableSleeping: false });
   engine.gravity.y = 1;
@@ -244,6 +247,7 @@ export function mountRainSimulation(
       gridSigRef,
     );
     syncGridColliders(nodeMap, getActive, layout, now);
+    afterGridSync?.();
 
     spawnCarry += (SPAWNS_PER_SEC * dt) / 1000;
     while (spawnCarry >= 1) {

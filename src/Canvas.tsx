@@ -3,6 +3,7 @@ import { useEffect, useId, useRef } from "react";
 import {
   KEYBOARD_SURFACE_BG,
   renderKeyboardSvg,
+  updateGridNodeCirclesFromSnapshot,
 } from "./keyboardSvg";
 import { mountRainSimulation } from "./rainSimulation";
 
@@ -19,8 +20,10 @@ export default function Canvas({ active }: CanvasProps) {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    return mountRainSimulation(host, () => activeRef.current);
-  }, []);
+    return mountRainSimulation(host, () => activeRef.current, () => {
+      updateGridNodeCirclesFromSnapshot(host, gradientIdPrefix);
+    });
+  }, [gradientIdPrefix]);
 
   useEffect(() => {
     const host = hostRef.current;
