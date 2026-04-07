@@ -54,8 +54,9 @@ function App() {
 
   return (
     <div className="flex flex-col items-center justify-center gap-2 h-full w-full m-0">
-      <div className="border-b border-gray-300 w-full p-2 flex flex-row gap-2 items-center">
-        <div>
+      <div className="border-b border-gray-300 w-full p-2 flex flex-row gap-8 items-center">
+        <p>Press a key!</p>
+        <div className="flex flex-row gap-1 items-center">
           <label htmlFor="delay-input">
             Enter Delay (currently {delay} seconds)
           </label>
@@ -68,7 +69,7 @@ function App() {
             onChange={handleDelayChange}
           />
         </div>
-        <div>
+        <div className="flex flex-row gap-1 items-center">
           <input
             type="radio"
             id="mode1"
