@@ -35,7 +35,7 @@ export const GRID_NODE_VISUAL_RADIUS_SCALE = 2.75;
  * Inactive grid nodes render/physics sit at base position plus a random offset in
  * [-side/2, +side/2]² where `side = stepPx ×` this factor.
  */
-export const GRID_NODE_JITTER_BOX_SIDE_FRAC = 0.82;
+export const GRID_NODE_JITTER_BOX_SIDE_FRAC = 0.52;
 
 export function computeKeyboardLayout(
   hostCssWidth: number,
