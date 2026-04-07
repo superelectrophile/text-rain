@@ -1,9 +1,13 @@
 import * as d3 from "d3";
 import Matter from "matter-js";
+import { clearGridNodeRenderSnapshot, replaceGridNodeRenderSnapshot } from "./gridNodeRenderSnapshot";
 import {
   buildGridGlowData,
   computeKeyboardLayout,
   gridLayoutSignature,
+  GRID_NODE_HIT_RADIUS_FRAC,
+  GRID_NODE_JITTER_BOX_SIDE_FRAC,
+  isPointCoveredByActiveKeys,
   KEY_FADE_MS,
 } from "./keyboardSvg";
 
@@ -41,14 +45,25 @@ function spawnRainDrop(world: Matter.World, width: number) {
   World.add(world, drop);
 }
 
+function randomJitter(side: number) {
+  return (Math.random() - 0.5) * side;
+}
+
 type NodePhys = {
   body: Matter.Body;
+  /** Glow/collision “on” from key overlap using jittered position while inactive. */
+  logicalDesired: boolean;
+  /** Random offset while inactive; when activating, copied to `frozenJ*`. */
+  jitterX: number;
+  jitterY: number;
+  /** Offset from base while active — last jittered position, no longer updated. */
+  frozenJx: number;
+  frozenJy: number;
   lastDesired: boolean;
   animStart: number;
   animFrom: number;
   animTo: number;
   displayScale: number;
-  /** Current geometric scale relative to creation radius (for Body.scale). */
   lastGeomScale: number;
 };
 
@@ -74,22 +89,39 @@ function ensureGridColliders(
   removeGridBodies(world);
   nodeMap.clear();
 
-  const { nodes, stepPx } = buildGridGlowData(layout, getActive());
-  const maxR = stepPx * 0.48;
+  const { nodes, stepPx } = buildGridGlowData(layout);
+  const maxR = stepPx * GRID_NODE_HIT_RADIUS_FRAC;
+  const jitterSide = stepPx * GRID_NODE_JITTER_BOX_SIDE_FRAC;
+  const active = getActive();
 
   for (const n of nodes) {
-    const body = Bodies.circle(n.cx, n.cy, maxR, {
+    const jitterX = randomJitter(jitterSide);
+    const jitterY = randomJitter(jitterSide);
+    const hitX = n.cx + jitterX;
+    const hitY = n.cy + jitterY;
+    const logicalDesired = isPointCoveredByActiveKeys(hitX, hitY, active, layout);
+    const frozenJx = logicalDesired ? jitterX : 0;
+    const frozenJy = logicalDesired ? jitterY : 0;
+    const wx = n.cx + (logicalDesired ? frozenJx : jitterX);
+    const wy = n.cy + (logicalDesired ? frozenJy : jitterY);
+
+    const body = Bodies.circle(wx, wy, maxR, {
       isStatic: true,
       isSensor: true,
       label: GRID_NODE_LABEL,
     });
     World.add(world, body);
-    const displayScale = n.desired ? 1 : 0;
+    const displayScale = logicalDesired ? 1 : 0;
     const geom = Math.max(GEOM_EPS, displayScale);
-    Body.scale(body, geom, geom, { x: n.cx, y: n.cy });
+    Body.scale(body, geom, geom, { x: wx, y: wy });
     nodeMap.set(n.id, {
       body,
-      lastDesired: n.desired,
+      logicalDesired,
+      jitterX,
+      jitterY,
+      frozenJx,
+      frozenJy,
+      lastDesired: logicalDesired,
       animStart: now - KEY_FADE_MS,
       animFrom: displayScale,
       animTo: displayScale,
@@ -106,18 +138,38 @@ function syncGridColliders(
   now: number,
 ) {
   const active = getActive();
-  const { nodes } = buildGridGlowData(layout, active);
+  const { nodes, stepPx } = buildGridGlowData(layout);
+  const jitterSide = stepPx * GRID_NODE_JITTER_BOX_SIDE_FRAC;
 
   for (const n of nodes) {
     const np = nodeMap.get(n.id);
     if (!np) continue;
 
-    const desired = n.desired;
-    if (desired !== np.lastDesired) {
+    const wasDesired = np.logicalDesired;
+    const posHitX = wasDesired ? n.cx + np.frozenJx : n.cx + np.jitterX;
+    const posHitY = wasDesired ? n.cy + np.frozenJy : n.cy + np.jitterY;
+
+    let nextDesired = isPointCoveredByActiveKeys(posHitX, posHitY, active, layout);
+
+    if (nextDesired && !wasDesired) {
+      np.frozenJx = np.jitterX;
+      np.frozenJy = np.jitterY;
+    }
+
+    if (!nextDesired && wasDesired) {
+      np.frozenJx = 0;
+      np.frozenJy = 0;
+      np.jitterX = randomJitter(jitterSide);
+      np.jitterY = randomJitter(jitterSide);
+    }
+
+    np.logicalDesired = nextDesired;
+
+    if (nextDesired !== np.lastDesired) {
       np.animFrom = np.displayScale;
-      np.animTo = desired ? 1 : 0;
+      np.animTo = nextDesired ? 1 : 0;
       np.animStart = now;
-      np.lastDesired = desired;
+      np.lastDesired = nextDesired;
     }
     const t = Math.min(1, (now - np.animStart) / KEY_FADE_MS);
     np.displayScale =
@@ -125,18 +177,33 @@ function syncGridColliders(
 
     const scale = Math.max(0, Math.min(1, np.displayScale));
     const { body } = np;
-    const cx = n.cx;
-    const cy = n.cy;
+    const wx = n.cx + (nextDesired ? np.frozenJx : np.jitterX);
+    const wy = n.cy + (nextDesired ? np.frozenJy : np.jitterY);
 
     body.isSensor = scale < NODE_SENSOR_THRESHOLD;
 
-    Body.setPosition(body, { x: cx, y: cy });
+    Body.setPosition(body, { x: wx, y: wy });
 
     const targetGeom = Math.max(GEOM_EPS, scale);
     const ratio = targetGeom / np.lastGeomScale;
-    Body.scale(body, ratio, ratio, { x: cx, y: cy });
+    Body.scale(body, ratio, ratio, { x: wx, y: wy });
     np.lastGeomScale = targetGeom;
   }
+
+  const snap = new Map<
+    string,
+    { logicalDesired: boolean; jitterX: number; jitterY: number }
+  >();
+  for (const n of nodes) {
+    const np = nodeMap.get(n.id);
+    if (!np) continue;
+    snap.set(n.id, {
+      logicalDesired: np.logicalDesired,
+      jitterX: np.logicalDesired ? np.frozenJx : np.jitterX,
+      jitterY: np.logicalDesired ? np.frozenJy : np.jitterY,
+    });
+  }
+  replaceGridNodeRenderSnapshot(snap);
 }
 
 /**
@@ -235,6 +302,7 @@ export function mountRainSimulation(
     Engine.clear(engine);
     nodeMap.clear();
     gridSigRef.v = "";
+    clearGridNodeRenderSnapshot();
     d3.select(host).selectAll("svg.rain-layer").remove();
   };
 }

@@ -1,4 +1,5 @@
 import * as d3 from "d3";
+import { getGridNodeRenderSnap } from "./gridNodeRenderSnapshot";
 import {
   KEYBOARD_BOUNDS,
   KEYBOARD_HEIGHT_UNITS,
@@ -20,6 +21,21 @@ export const GRID_CELLS_PER_KEY = 4;
  * Keys activate grid nodes within this radius (× keyboard `cell`) from the key center.
  */
 export const KEY_INFLUENCE_RADIUS_FRAC = 0.58;
+
+/** Matter circle radius as a fraction of grid step (physics only). */
+export const GRID_NODE_HIT_RADIUS_FRAC = 0.48;
+
+/**
+ * Visual glow radius relative to the physics hit radius — glow is drawn this much larger
+ * than the rain collider.
+ */
+export const GRID_NODE_VISUAL_RADIUS_SCALE = 2.75;
+
+/**
+ * Inactive grid nodes render/physics sit at base position plus a random offset in
+ * [-side/2, +side/2]² where `side = stepPx ×` this factor.
+ */
+export const GRID_NODE_JITTER_BOX_SIDE_FRAC = 0.82;
 
 export function computeKeyboardLayout(
   hostCssWidth: number,
@@ -45,9 +61,8 @@ export type GridGlowDatum = {
   id: string;
   cx: number;
   cy: number;
-  /** Visual (and physics target) radius at full scale */
+  /** Rendered circle radius (much larger than physics hit). */
   r: number;
-  desired: boolean;
 };
 
 /** Opaque signature when grid topology or placement in screen space changes. */
@@ -63,9 +78,10 @@ export function gridLayoutSignature(
   return `${cols}x${rows}@${stepPx.toFixed(4)},${offsetX.toFixed(1)},${offsetY.toFixed(1)},${cell.toFixed(4)}`;
 }
 
-export function isGridNodeDesired(
-  cx: number,
-  cy: number,
+/** True if world point (px, py) lies within any active key’s influence disc. */
+export function isPointCoveredByActiveKeys(
+  px: number,
+  py: number,
   active: Record<string, boolean>,
   layout: ReturnType<typeof computeKeyboardLayout>,
 ): boolean {
@@ -78,20 +94,25 @@ export function isGridNodeDesired(
     const pos = KEY_POSITION_MAP[keyId];
     const kx = offsetX + (pos.x - minX) * cell + cell * 0.5;
     const ky = offsetY + (pos.y - minY) * cell + cell * 0.5;
-    const dx = cx - kx;
-    const dy = cy - ky;
+    const dx = px - kx;
+    const dy = py - ky;
     if (dx * dx + dy * dy <= R2) return true;
   }
   return false;
 }
 
-/**
- * Grid node positions + desired state from logical key activations.
- * Physics uses the same `desired` predicate so colliders track keys indirectly.
- */
+export function isGridNodeDesired(
+  cx: number,
+  cy: number,
+  active: Record<string, boolean>,
+  layout: ReturnType<typeof computeKeyboardLayout>,
+): boolean {
+  return isPointCoveredByActiveKeys(cx, cy, active, layout);
+}
+
+/** Base grid layout for glow + simulation (node activation comes from the physics snapshot). */
 export function buildGridGlowData(
   layout: ReturnType<typeof computeKeyboardLayout>,
-  active: Record<string, boolean>,
 ): { nodes: GridGlowDatum[]; stepPx: number } {
   const { offsetX, offsetY, cell } = layout;
   const kbW = cell * KEYBOARD_WIDTH_UNITS;
@@ -103,7 +124,8 @@ export function buildGridGlowData(
   const usedH = rows * stepPx;
   const marginX = (kbW - usedW) / 2;
   const marginY = (kbH - usedH) / 2;
-  const r = stepPx * 0.48;
+  const hitR = stepPx * GRID_NODE_HIT_RADIUS_FRAC;
+  const r = hitR * GRID_NODE_VISUAL_RADIUS_SCALE;
   const nodes: GridGlowDatum[] = [];
   for (let j = 0; j < rows; j++) {
     for (let i = 0; i < cols; i++) {
@@ -114,7 +136,6 @@ export function buildGridGlowData(
         cx,
         cy,
         r,
-        desired: isGridNodeDesired(cx, cy, active, layout),
       });
     }
   }
@@ -131,6 +152,7 @@ function buildRadialGradient(
   const g = defs
     .append("radialGradient")
     .attr("id", id)
+    .attr("gradientUnits", "objectBoundingBox")
     .attr("cx", "50%")
     .attr("cy", "50%")
     .attr("r", radiusPct);
@@ -151,13 +173,22 @@ export const KEY_FADE_MS = 320;
  */
 export function renderKeyboardSvg(
   host: HTMLDivElement,
-  active: Record<string, boolean>,
+  _active: Record<string, boolean>,
   gradientIdPrefix: string,
   animateOpacity = true,
 ) {
   const layout = computeKeyboardLayout(host.clientWidth, host.clientHeight);
   const { w, h } = layout;
-  const { nodes } = buildGridGlowData(layout, active);
+  const { nodes: baseNodes } = buildGridGlowData(layout);
+
+  type RenderDatum = GridGlowDatum & { desired: boolean };
+  const nodes: RenderDatum[] = baseNodes.map((d) => {
+    const snap = getGridNodeRenderSnap(d.id);
+    const desired = snap?.logicalDesired ?? false;
+    const jx = snap?.jitterX ?? 0;
+    const jy = snap?.jitterY ?? 0;
+    return { ...d, cx: d.cx + jx, cy: d.cy + jy, desired };
+  });
 
   const activeGradId = `${gradientIdPrefix}-glow-node`;
 
@@ -173,7 +204,8 @@ export function renderKeyboardSvg(
     .style("inset", "0")
     .style("z-index", "1")
     .attr("viewBox", `0 0 ${w} ${h}`)
-    .attr("preserveAspectRatio", "xMidYMid meet");
+    .attr("preserveAspectRatio", "xMidYMid meet")
+    .style("overflow", "visible");
 
   const defs = svg
     .selectAll<SVGDefsElement, undefined>("defs")
@@ -182,17 +214,25 @@ export function renderKeyboardSvg(
 
   defs.selectAll("*").remove();
 
-  buildRadialGradient(defs, activeGradId, "#60a5fa", [
-    { offset: "0%", opacity: 0.55 },
-    { offset: "35%", opacity: 0.38 },
-    { offset: "100%", opacity: 0 },
-  ], "68%");
+  buildRadialGradient(
+    defs,
+    activeGradId,
+    "#60a5fa",
+    [
+      { offset: "0%", opacity: 0.32 },
+      { offset: "14%", opacity: 0.24 },
+      { offset: "32%", opacity: 0.16 },
+      { offset: "52%", opacity: 0.08 },
+      { offset: "72%", opacity: 0 },
+    ],
+    "100%",
+  );
 
-  const opacityTarget = (d: GridGlowDatum) => (d.desired ? 1 : 0);
-  const rTarget = (d: GridGlowDatum) => (d.desired ? d.r : 0);
+  const opacityTarget = (d: RenderDatum) => (d.desired ? 1 : 0);
+  const rTarget = (d: RenderDatum) => (d.desired ? d.r : 0);
 
   const circles = svg
-    .selectAll<SVGCircleElement, GridGlowDatum>("circle.grid-node")
+    .selectAll<SVGCircleElement, RenderDatum>("circle.grid-node")
     .data(nodes, (d) => d.id)
     .join(
       (enter) =>
