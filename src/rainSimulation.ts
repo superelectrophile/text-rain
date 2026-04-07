@@ -42,12 +42,15 @@ const SPECIAL_SPAWN_Y_VARIATION_PX = 82;
 /** SVG `font-size` for rain glyphs (px); tuned to ~match `RAIN_RADIUS`. */
 const RAIN_FONT_PX = RAIN_RADIUS * 2.35;
 
-const SPECIAL_TEXT_INTERVAL_MS = 5000;
-const SPECIAL_CHAR_COUNT = 30;
+const SPECIAL_TEXT_INTERVAL_MS = 10000;
+/** Consecutive whole words sampled from the poem (split on whitespace). */
+const SPECIAL_WORD_COUNT = 6;
 /** Horizontal span from first to last letter center, as a fraction of canvas width. */
 const SPECIAL_LINE_WIDTH_FRAC = 0.5;
 
 const POEM_FLAT = poemSource.replace(/\s+/g, " ").trim();
+const POEM_WORDS =
+  POEM_FLAT.length === 0 ? [] : POEM_FLAT.split(/\s+/).filter(Boolean);
 
 /** Collider inactive below this scale (sensor, no rain blocking). */
 const NODE_SENSOR_THRESHOLD = 0.002;
@@ -58,24 +61,24 @@ function randomRainLetter() {
   return String.fromCharCode(65 + Math.floor(Math.random() * 26));
 }
 
-function pickRandomPoemSlice30(): string {
-  const src = POEM_FLAT;
-  if (src.length === 0) return " ".repeat(SPECIAL_CHAR_COUNT);
-  if (src.length < SPECIAL_CHAR_COUNT)
-    return src.padEnd(SPECIAL_CHAR_COUNT, " ");
-  const start = Math.floor(
-    Math.random() * (src.length - SPECIAL_CHAR_COUNT + 1),
-  );
-  return src.slice(start, start + SPECIAL_CHAR_COUNT);
+/** Up to six consecutive words joined with spaces; one raindrop per character (incl. spaces). */
+function pickRandomSixWordsLine(): string {
+  const w = POEM_WORDS;
+  if (w.length === 0) return "";
+  if (w.length <= SPECIAL_WORD_COUNT) return w.join(" ");
+  const start = Math.floor(Math.random() * (w.length - SPECIAL_WORD_COUNT + 1));
+  return w.slice(start, start + SPECIAL_WORD_COUNT).join(" ");
 }
 
-/** X positions for `SPECIAL_CHAR_COUNT` letters, centered, spanning `SPECIAL_LINE_WIDTH_FRAC` of width. */
-function specialLetterXs(width: number): number[] {
+/** X positions for `charCount` letters, centered, spanning `SPECIAL_LINE_WIDTH_FRAC` of width. */
+function specialLetterXs(width: number, charCount: number): number[] {
   const w = Math.max(32, width);
+  const n = Math.max(1, charCount);
   const span = w * SPECIAL_LINE_WIDTH_FRAC;
-  const step = span / Math.max(1, SPECIAL_CHAR_COUNT - 1);
+  if (n === 1) return [w * 0.5];
+  const step = span / (n - 1);
   const left = w * 0.5 - span * 0.5;
-  return Array.from({ length: SPECIAL_CHAR_COUNT }, (_, i) => left + i * step);
+  return Array.from({ length: n }, (_, i) => left + i * step);
 }
 
 function adjustRainCollisionDepth(
@@ -140,11 +143,12 @@ function spawnSpecialTextLine(
   glyphByBodyId: Map<number, string>,
   poemRainBodyIds: Set<number>,
 ) {
+  if (text.length === 0) return;
   const r = SPECIAL_RAIN_RADIUS;
-  const xs = specialLetterXs(width);
+  const xs = specialLetterXs(width, text.length);
   const yBase = -r - 6;
-  for (let i = 0; i < SPECIAL_CHAR_COUNT; i++) {
-    const ch = text[i] ?? " ";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
     const x = xs[i]!;
     const y = yBase + (Math.random() - 0.5) * SPECIAL_SPAWN_Y_VARIATION_PX;
     const drop = Bodies.circle(x, y, r, {
@@ -425,7 +429,7 @@ export function mountRainSimulation(
       spawnSpecialTextLine(
         engine.world,
         width,
-        pickRandomPoemSlice30(),
+        pickRandomSixWordsLine(),
         rainGlyphByBodyId,
         poemRainBodyIds,
       );
