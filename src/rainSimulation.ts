@@ -15,13 +15,16 @@ import {
   KEY_FADE_MS,
 } from "./keyboardSvg";
 
-const { Engine, World, Bodies, Body, Composite } = Matter;
+const { Engine, World, Bodies, Body, Composite, Events } = Matter;
 
 const RAIN_LABEL = "rain";
 const GRID_NODE_LABEL = "grid-node";
 
-/** Simple semi-transparent fill for drops */
+/** Default drop fill when not colliding */
 const RAIN_FILL = "rgba(147, 197, 253, 0.42)";
+
+/** Solid white while overlapping any body (grid nodes, other drops, sensors, etc.). */
+const RAIN_FILL_COLLIDING = "#ffffff";
 
 /** Target spawns per second (Poisson-style using accumulator). */
 const SPAWNS_PER_SEC = 50;
@@ -30,6 +33,28 @@ const SPAWNS_PER_SEC = 50;
 const NODE_SENSOR_THRESHOLD = 0.002;
 
 const GEOM_EPS = 1e-4;
+
+function adjustRainCollisionDepth(
+  map: Map<number, number>,
+  body: Matter.Body,
+  delta: number,
+) {
+  if (body.label !== RAIN_LABEL) return;
+  const next = (map.get(body.id) ?? 0) + delta;
+  if (next <= 0) map.delete(body.id);
+  else map.set(body.id, next);
+}
+
+/** Each rain in the pair gets ±1 (rain–rain turns both white). */
+function adjustPairRainDepth(
+  map: Map<number, number>,
+  a: Matter.Body,
+  b: Matter.Body,
+  delta: number,
+) {
+  adjustRainCollisionDepth(map, a, delta);
+  adjustRainCollisionDepth(map, b, delta);
+}
 
 function spawnRainDrop(world: Matter.World, width: number) {
   const w = Math.max(32, width);
@@ -220,6 +245,24 @@ export function mountRainSimulation(
   engine.gravity.y = 1;
   engine.gravity.scale = 0.0011;
 
+  /** Count of active collision pairs per rain id (handles multi-contact). */
+  const rainCollisionDepth = new Map<number, number>();
+
+  const onCollisionStart = (e: { pairs: Matter.Pair[] }) => {
+    for (const pair of e.pairs) {
+      adjustPairRainDepth(rainCollisionDepth, pair.bodyA, pair.bodyB, 1);
+    }
+  };
+
+  const onCollisionEnd = (e: { pairs: Matter.Pair[] }) => {
+    for (const pair of e.pairs) {
+      adjustPairRainDepth(rainCollisionDepth, pair.bodyA, pair.bodyB, -1);
+    }
+  };
+
+  Events.on(engine, "collisionStart", onCollisionStart);
+  Events.on(engine, "collisionEnd", onCollisionEnd);
+
   const nodeMap = new Map<string, NodePhys>();
   const gridSigRef = { v: "" };
 
@@ -261,7 +304,10 @@ export function mountRainSimulation(
     for (const b of Composite.allBodies(engine.world)) {
       if (b.label === RAIN_LABEL && b.position.y > h + 28) removed.push(b);
     }
-    for (const b of removed) World.remove(engine.world, b);
+    for (const b of removed) {
+      rainCollisionDepth.delete(b.id);
+      World.remove(engine.world, b);
+    }
 
     const rainBodies = Composite.allBodies(engine.world).filter(
       (b) => b.label === RAIN_LABEL,
@@ -293,7 +339,11 @@ export function mountRainSimulation(
       .attr("cx", (b) => b.position.x)
       .attr("cy", (b) => b.position.y)
       .attr("r", (b) => b.circleRadius ?? 3)
-      .attr("fill", RAIN_FILL);
+      .attr("fill", (b) =>
+        (rainCollisionDepth.get(b.id) ?? 0) > 0
+          ? RAIN_FILL_COLLIDING
+          : RAIN_FILL,
+      );
 
     raf = requestAnimationFrame(tick);
   };
@@ -302,6 +352,9 @@ export function mountRainSimulation(
 
   return () => {
     cancelAnimationFrame(raf);
+    Events.off(engine, "collisionStart", onCollisionStart);
+    Events.off(engine, "collisionEnd", onCollisionEnd);
+    rainCollisionDepth.clear();
     World.clear(engine.world, false);
     Engine.clear(engine);
     nodeMap.clear();
